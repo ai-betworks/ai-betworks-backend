@@ -24,6 +24,8 @@ const server = fastify({
   logger: true,
 });
 
+const HARDCODED_ROOM_ID = parseInt(process.env.HARDCODED_ROOM_ID || '17');
+
 // Register core plugins
 server.register(cors, {
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH'],
@@ -76,7 +78,28 @@ const start = async () => {
 };
 
 start();
-startContractEventListener();
+
+(async () => {
+  const { data: rooms, error: roomError } = await supabase
+    .from('rooms')
+    .select('*')
+    .eq('active', true)
+
+  if (roomError) {
+    console.error('Error fetching rooms:', roomError);
+    return;
+  }
+
+  const roomsToStart =
+    process.env.NODE_ENV === 'development'
+      ? rooms.filter((room) => room.id === HARDCODED_ROOM_ID)
+      : rooms;
+
+  roomsToStart.forEach((room) => {
+    console.log('Starting contract event listener for room:', room.id);
+    startContractEventListener(room.id).catch(console.error);
+  });
+})();
 
 const job = new CronJob('*/20 * * * * *', checkAndCreateRounds);
 job.start();

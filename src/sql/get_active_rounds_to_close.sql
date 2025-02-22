@@ -1,10 +1,12 @@
+-- use postgres
 -- drop function if exists get_active_rounds_to_close;
+
 CREATE OR REPLACE FUNCTION get_active_rounds_to_close()
-RETURNS TABLE(id int, active boolean, room_config jsonb, room_id int, contract_address text) AS $$
+RETURNS TABLE(id int, active boolean, room_config jsonb, room_id int, contract_address text, chain_id int) AS $$
 BEGIN
     RETURN QUERY
 
-    SELECT  rounds.id, rounds.active, rounds.round_config, rooms.id as room_id, rooms.contract_address
+    SELECT  rounds.id, rounds.active, rounds.round_config, rooms.id as room_id, rooms.contract_address, rooms.chain_id
 
     FROM    rounds
             inner join rooms on rooms.id = rounds.room_id

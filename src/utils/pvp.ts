@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { z } from 'zod';
-import { ethersProvider } from '../config';
+import {  getEthersProvider, getRoomContract } from '../config';
 import { agentMessageAiChatOutputSchema, agentMessageInputSchema } from '../schemas/agentMessage';
 import {
   AllPvpParametersType,
@@ -12,7 +12,6 @@ import {
   silenceStatusSchema,
 } from '../schemas/pvp';
 import { WsMessageTypes } from '../schemas/wsServer';
-import { roomAbi } from '../types/contract.types';
 import { AllAgentChatMessageSchemaTypes } from './schemas';
 /**
  * Defines the structure of PvP status data returned from the smart contract
@@ -91,10 +90,9 @@ function decodeParameters(parametersHex: string, verb: string): any {
 /**
  * Gets current PvP statuses from contract
  */
-async function getPvpStatuses(contractAddress: string, agentAddress: string): Promise<PvpStatus[]> {
+async function getPvpStatuses(contractAddress: string, chainId: number, agentAddress: string): Promise<PvpStatus[]> {
   try {
-    const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-    const contract = new ethers.Contract(contractAddress, roomAbi, provider);
+    const contract = getRoomContract(contractAddress, chainId);
     const statuses = await contract.getPvpStatuses(agentAddress);
 
     const parsedStatuses = statuses.map((status: any) => {
@@ -273,6 +271,7 @@ export async function applyPvp(
   senderAgentId: number,
   targetAgentIds: number[],
   contractAddress: string,
+  chainId: number,
   agentAddresses: Map<number, string>
 ): Promise<PvPResult> {
   console.log('applying PvP');
@@ -298,7 +297,7 @@ export async function applyPvp(
     }
 
     // console.log('Fetching pvp status from the contract for', [...targetAgentIds, senderAgentId]);
-    const currentBlock = await ethersProvider.getBlock('latest');
+    const currentBlock = await getEthersProvider(chainId).getBlock('latest');
     if (!currentBlock) {
       throw new Error('Failed to get current block, cannot apply PvP');
     }
@@ -310,7 +309,7 @@ export async function applyPvp(
     for (const targetId of [...targetAgentIds, senderAgentId]) {
       const targetAddress = agentAddresses.get(targetId);
       if (!targetAddress) continue;
-      currentStatusesForAgentsById[targetId] = await getPvpStatuses(contractAddress, targetAddress);
+      currentStatusesForAgentsById[targetId] = await getPvpStatuses(contractAddress, chainId, targetAddress);
     }
     result.pvpStatusEffects = currentStatusesForAgentsById;
 

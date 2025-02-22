@@ -1,7 +1,7 @@
 // import { roundService } from '../services/roundService';
 import { ethers } from 'ethers';
 import { z } from 'zod';
-import { supabase, wsOps } from './config';
+import { getEthersProvider, supabase, wsOps } from './config';
 import { agentMessageAgentOutputSchema } from './schemas/agentMessage';
 import {
   attackActionSchema,
@@ -18,20 +18,9 @@ import { roomAbi } from './types/contract.types';
 import { Database } from './types/database.types';
 import { sendMessageToAgent } from './utils/messageHandler';
 
-const HARDCODED_ROOM = 17;
-
 // Add a flag to track if we've already processed an event
 const processedEvents = new Set<string>();
 // Add this event to our processed set
-
-// Base Sepolia RPC URL (Use Alchemy, Infura, or Public RPC)
-
-// Error in createNewRound: Error: network does not support ENS (operation="getEnsAddress",
-export function getRoomContract(contractAddress: string) {
-  const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
-  const wallet = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY!, provider);
-  return new ethers.Contract(contractAddress, roomAbi, wallet);
-}
 
 // Helper function to compute the hash of an indexed string
 function getIndexedStringHash(str: string): string {
@@ -134,9 +123,20 @@ function logAvailableEvents(abi: any[]) {
   });
 }
 
-export async function startContractEventListener() {
+export async function startContractEventListener(roomId: number) {
   try {
-    const provider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);
+    const { data: room, error: roomError } = await supabase
+      .from('rooms')
+      .select('*')
+      .eq('id', roomId)
+      .single();
+
+    if (roomError) {
+      console.error('Error fetching room:', roomError);
+      return;
+    }
+
+    const provider = getEthersProvider(room.chain_id);
 
     // Add reconnection logic
     // provider.on('disconnect', async (error) => {
@@ -152,23 +152,12 @@ export async function startContractEventListener() {
     // });
 
     // Verify provider connection
-    const { data: room, error: roomError } = await supabase
-      .from('rooms')
-      .select('*')
-      .eq('id', HARDCODED_ROOM)
-      .single();
-
-    if (roomError) {
-      console.error('Error fetching room:', roomError);
-      return;
-    }
-
     const network = await provider.getNetwork();
     console.log('Connected to network:', network.name, 'chainId:', network.chainId);
 
     if (!room.contract_address) {
       throw new Error(
-        'No contract address found for room #' + HARDCODED_ROOM + " can't listen to contract"
+        'No contract address found for room #' + room.id + " can't listen to contract"
       );
     }
     const contractAddress = room.contract_address;
@@ -182,7 +171,7 @@ export async function startContractEventListener() {
 
     console.log(
       'Starting contract event listener on room #',
-      HARDCODED_ROOM,
+      room.id,
       'with address',
       contractAddress
     );
@@ -313,7 +302,7 @@ export async function startContractEventListener() {
       } satisfies z.infer<typeof pvpActionEnactedAiChatOutputSchema>;
 
       await wsOps.broadcastToAiChat({
-        roomId: HARDCODED_ROOM,
+        roomId: room.id,
         record: {
           agent_id: 57, //TODO hardcoding so bad, feels so bad, profound sadness, mama GM
           message: pvpActionMessage,
@@ -410,10 +399,7 @@ export async function startContractEventListener() {
     console.error('Error in startContractEventListener:', error);
     // Retry after delay
     setTimeout(() => {
-      startContractEventListener().catch(console.error);
+      startContractEventListener(roomId).catch(console.error);
     }, 5000);
   }
 }
-
-// Start the listener and handle any promise rejections
-startContractEventListener().catch(console.error);

@@ -1,7 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import { z } from 'zod';
-import { backendEthersSigningWallet, supabase } from './config';
-import { getRoomContract } from './contract-event-listener';
+import { getEthersSigningWallet, getRoomContract, supabase } from './config';
 import { gmMessageAiChatOutputSchema, gmMessageInputSchema } from './schemas/gmMessage';
 import { WsMessageTypes } from './schemas/wsServer';
 import { Database } from './types/database.types';
@@ -13,7 +12,7 @@ import { wsServer } from './ws/server';
 
 // TODO fixme, hardcoding bad
 const HARDCODED_GM_ID = 57;
-const HARDCODED_ROOM_ID = 17;
+const HARDCODED_ROOM_ID = parseInt(process.env.HARDCODED_ROOM_ID || '17');
 
 export async function checkAgentsForNudge() {
   const { data: roundAgents, error } = await supabase
@@ -98,7 +97,7 @@ export async function createNewRound(
   room: Database['public']['Functions']['get_active_rooms_needing_rounds']['Returns'][0]
 ) {
   try {
-    const contract = getRoomContract(room.contract_address);
+    const contract = getRoomContract(room.contract_address, room.chain_id);
     const tx = await contract.startRound();
     const receipt = await tx.wait();
 
@@ -152,9 +151,11 @@ export async function createNewRound(
     //       console.error('Error reinitializing agent:', error.response?.data);
     //     });
     // }
+    const backendEthersSigningWallet = getEthersSigningWallet(room.chain_id);
 
     await sendGmMessage({
       roomId: newRound.room_id,
+      sender: backendEthersSigningWallet.address,
       roundId: newRound.id,
       targets: [],
       message: 'Round #' + newRound.id + ' has started, you may place your bets now',
@@ -202,11 +203,13 @@ export async function checkAndCloseRounds() {
 
 async function sendGmMessage({
   roomId,
+  sender,
   roundId,
   targets,
   message,
 }: {
   roomId: number;
+  sender: string;
   roundId: number;
   targets: number[];
   message: string;
@@ -215,7 +218,7 @@ async function sendGmMessage({
     roomId,
     message: {
       messageType: WsMessageTypes.GM_MESSAGE,
-      sender: backendEthersSigningWallet.address,
+      sender,
       signature: Date.now().toString(),
       content: sortObjectKeys({
         roomId,
@@ -246,7 +249,7 @@ export async function closeRound(
     return;
   }
 
-  const contract = getRoomContract(round.contract_address);
+  const contract = getRoomContract(round.contract_address, round.chain_id);
   const tx = await contract.setCurrentRoundState(RoundState.Processing);
   // const tx = await contract.performUpKeep(ethers.toUtf8Bytes(''));
   const receipt = await tx.wait();
@@ -292,6 +295,7 @@ export async function closeRound(
     ignoreErrors: false,
     additionalData: {},
   };
+  const backendEthersSigningWallet = getEthersSigningWallet(round.chain_id);
 
   const signature = await backendEthersSigningWallet.signMessage(
     JSON.stringify(sortObjectKeys(content))
@@ -336,6 +340,7 @@ export async function closeRound(
   // Just sends a gm message to ai chat to tell them what's happen
   await sendGmMessage({
     roomId: round.room_id,
+    sender: backendEthersSigningWallet.address,
     roundId: round.id,
     targets: [],
     message: 'GM finished asking agents to submit their decision, waiting for responses...',

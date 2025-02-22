@@ -1,9 +1,12 @@
+-- use postgres
+-- drop function if exists get_active_rooms_needing_rounds();
+
 CREATE OR REPLACE FUNCTION get_active_rooms_needing_rounds()
-RETURNS TABLE(id int, active boolean, contract_address text, room_config jsonb) AS $$
+RETURNS TABLE(id int, active boolean, contract_address text, chain_id int, room_config jsonb) AS $$
 BEGIN
     RETURN QUERY
 
-    SELECT rooms.id, rooms.active, rooms.contract_address, rooms.room_config
+    SELECT rooms.id, rooms.active, rooms.contract_address, rooms.chain_id, rooms.room_config
     FROM   rooms
     WHERE  rooms.active = true
            and rooms.contract_address is not null

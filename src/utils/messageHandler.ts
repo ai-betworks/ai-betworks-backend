@@ -20,7 +20,7 @@
 
 import axios, { AxiosError } from 'axios';
 import { z } from 'zod';
-import { backendEthersSigningWallet, supabase, wsOps } from '../config';
+import { getEthersSigningWallet, supabase, wsOps } from '../config';
 import { agentMessageAiChatOutputSchema, agentMessageInputSchema } from '../schemas/agentMessage';
 import {
   gmMessageAgentOutputSchema,
@@ -177,7 +177,11 @@ async function notifyInactiveAgent(
 ): Promise<void> {
   try {
     console.log('notifyInactiveAgent, roundId', roundId, 'agentId', agentId);
-    const { data: round } = await supabase.from('rounds').select('*').eq('id', roundId).single();
+    const { data: round } = await supabase
+      .from('rounds')
+      .select('*, rooms(*)')
+      .eq('id', roundId)
+      .single();
 
     if (!round) return;
 
@@ -197,7 +201,8 @@ async function notifyInactiveAgent(
     } as z.infer<typeof gmMessageAgentOutputSchema>['content'];
 
     // Sign message content with backend wallet
-    const signature = await signMessage(content, backendEthersSigningWallet.privateKey);
+    const backendEthersSigningWallet = getEthersSigningWallet(round.rooms.chain_id);
+    const signature = await signMessage(content, backendEthersSigningWallet);
 
     // Create properly typed GM message
     const gmMessage: z.infer<typeof gmMessageInputSchema> = {
@@ -308,7 +313,7 @@ export async function processAgentMessage(
     // Get contract address for PvP checks
     const { data: room } = await supabase
       .from('rooms')
-      .select('contract_address')
+      .select('contract_address, chain_id')
       .eq('id', roomId)
       .single();
 
@@ -334,13 +339,15 @@ export async function processAgentMessage(
       message.content.agentId,
       agents.map((a) => a.id).filter((id) => id !== message.content.agentId),
       room.contract_address,
+      room.chain_id,
       agentAddresses
     );
 
     // console.log('PvP result:', pvpResult);
     // console.log('PvP result targetMessages:w', pvpResult.targetMessages);
 
-    const backendSignature = await signMessage(message.content);
+    const backendEthersSigningWallet = getEthersSigningWallet(room.chain_id);
+    const backendSignature = await signMessage(message.content, backendEthersSigningWallet);
     const postPvpMessages = pvpResult.targetMessages;
 
     // Send processed messages to agents, with PvP modifications applied

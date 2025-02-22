@@ -512,6 +512,27 @@ export type Database = {
         }
         Relationships: []
       }
+      waitlist: {
+        Row: {
+          address: string | null
+          created_at: string
+          email: string | null
+          id: number
+        }
+        Insert: {
+          address?: string | null
+          created_at?: string
+          email?: string | null
+          id?: number
+        }
+        Update: {
+          address?: string | null
+          created_at?: string
+          email?: string | null
+          id?: number
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -538,6 +559,7 @@ export type Database = {
           id: number
           active: boolean
           contract_address: string
+          chain_id: number
           room_config: Json
         }[]
       }
@@ -549,6 +571,7 @@ export type Database = {
           room_config: Json
           room_id: number
           contract_address: string
+          chain_id: number
         }[]
       }
       get_round_agents: {

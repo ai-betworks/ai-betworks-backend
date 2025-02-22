@@ -1,7 +1,7 @@
 import { Wallet } from 'ethers';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { contractClient, supabase } from '../config';
+import { defaultContractClient, getContractClient, supabase } from '../config';
 import { signatureVerificationPlugin } from '../middleware/signatureVerification';
 import { WsMessageTypes } from '../schemas/wsServer';
 import { Database, Tables } from '../types/database.types';
@@ -71,6 +71,7 @@ export async function agentRoutes(server: FastifyInstance) {
         }
 
         console.log('creating agent on contract with creator:', signer, 'and agentId:', agent.id);
+        const contractClient = defaultContractClient();
         const contractAgent = await contractClient.createAgent({
           creator: signer as `0x${string}`,
           agentId: BigInt(agent.id),

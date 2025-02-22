@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { contractClient, supabase } from '../config';
+import { defaultContractClient, getContractClient, supabase } from '../config';
 import { roomService } from '../services/roomService';
 import { agentAddSchema, agentBulkAddSchema, roomSetupSchema } from '../utils/schemas';
 import { chainIdToNetwork, createAndSaveWalletToFile } from '../utils/walletUtils';
@@ -39,6 +39,8 @@ export async function roomRoutes(server: FastifyInstance) {
       }
 
       const newAgentWallets = [];
+      const contractClient = getContractClient(request.body.content.chain_id);
+
       for (const agent of agents) {
         const result = await createAndSaveWalletToFile(
           chainIdToNetwork[request.body.content.chain_id]

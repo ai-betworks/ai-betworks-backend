@@ -1,5 +1,5 @@
 import { Wallet, getBytes, hashMessage, recoverAddress } from 'ethers';
-import { SIGNER_PRIVATE_KEY } from '../config';
+import { getEthersSigningWallet } from '../config';
 
 type VerificationResult = {
   signer: string;
@@ -83,14 +83,13 @@ export async function signPayload(wallet: Wallet, payload: any): Promise<string>
 
 export const signMessage = async (
   content: object,
-  privateKey: string = SIGNER_PRIVATE_KEY || ''
+  wallet: Wallet
 ): Promise<string> => {
   try {
     // Use deterministic stringification
     const messageString = JSON.stringify(sortObjectKeys(content));
 
     // Create wallet and sign
-    const wallet = new Wallet(privateKey);
     const signature = await wallet.signMessage(messageString);
 
     return signature;
