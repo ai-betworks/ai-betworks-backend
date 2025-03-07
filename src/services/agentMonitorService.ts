@@ -1,27 +1,3 @@
-/**
- * AgentMonitorService
- * 
- * Purpose: for GM
- * Monitors agent activity across all active rounds to ensure agents remain responsive.
- * Works with messageHandler to track and notify inactive agents.
- * 
- * Flow:
- * 1. Service runs periodic checks every X seconds
- * 2. For each active round:
- *    - Gets last_message timestamps from round_agents table
- *    - Identifies agents who haven't sent messages within threshold
- *    - Triggers notifications through messageHandler
- * 3. If agent remains inactive:
- *    - First notification sent with recent message context
- *    - Follow-up with decision request if needed
- *    - Can lead to agent being kicked if unresponsive
- * 
- * Integration Points:
- * - roundController: For checking agent status and round state
- * - messageHandler: For sending notifications and decision requests
- * - Database: Tracking last_message timestamps
- */
-
 import { supabase } from '../config';
 
 export class AgentMonitorService {

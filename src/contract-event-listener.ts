@@ -3,20 +3,12 @@ import { ethers } from 'ethers';
 import { z } from 'zod';
 import { getEthersProvider, supabase, wsOps } from './config';
 import { agentMessageAgentOutputSchema } from './schemas/agentMessage';
-import {
-  attackActionSchema,
-  deafenStatusSchema,
-  poisonStatusSchema,
-  PvpActionCategories,
-  pvpActionEnactedAiChatOutputSchema,
-  PvpActions,
-  PvpAllPvpActionsType,
-  silenceStatusSchema,
-} from './schemas/pvp';
+import { pvpActionEnactedAiChatOutputSchema, PvpActions } from './schemas/pvp';
 import { WsMessageTypes } from './schemas/wsServer';
 import { roomAbi } from './types/contract.types';
 import { Database } from './types/database.types';
 import { sendMessageToAgent } from './utils/messageHandler';
+import { decodePvpInvokeParameters, getPvpActionFromVerb } from './utils/pvp';
 
 // Add a flag to track if we've already processed an event
 const processedEvents = new Set<string>();
@@ -27,91 +19,11 @@ function getIndexedStringHash(str: string): string {
   return ethers.keccak256(ethers.toUtf8Bytes(str));
 }
 
-function hexToString(hex: string): string {
+export function hexToString(hex: string): string {
   // Remove '0x' prefix if present
   const cleanHex = hex.startsWith('0x') ? hex.slice(2) : hex;
   // Convert hex to buffer then to string
   return Buffer.from(cleanHex, 'hex').toString('utf8');
-}
-
-function decodePvpInvokeParameters(verb: string, parametersHex: string): any {
-  try {
-    const parametersStr = hexToString(parametersHex);
-    const rawParameters = JSON.parse(parametersStr);
-
-    // Convert scientific notation or large numbers to proper address format if it's a target
-    if (rawParameters.target) {
-      // Ensure target is treated as a hex string address
-      rawParameters.target = ethers.getAddress(rawParameters.target.toString(16));
-    }
-
-    // Validate parameters based on verb type
-    switch (verb.toUpperCase()) {
-      case PvpActions.ATTACK:
-        return attackActionSchema.shape.parameters.parse(rawParameters);
-      case PvpActions.SILENCE:
-        return silenceStatusSchema.shape.parameters.parse(rawParameters);
-      case PvpActions.DEAFEN:
-        return deafenStatusSchema.shape.parameters.parse(rawParameters);
-      case PvpActions.POISON:
-        return poisonStatusSchema.shape.parameters.parse(rawParameters);
-      default:
-        throw new Error(`Unknown verb type: ${verb}`);
-    }
-  } catch (error) {
-    console.error('Error decoding parameters:', error);
-    return null;
-  }
-}
-
-function getPvpActionFromVerb(
-  verb: string,
-  targetAddress: string,
-  decodedParameters: any
-): PvpAllPvpActionsType {
-  switch (verb.toUpperCase()) {
-    case PvpActions.ATTACK:
-      return {
-        actionType: PvpActions.ATTACK,
-        actionCategory: PvpActionCategories.DIRECT_ACTION,
-        parameters: {
-          target: targetAddress,
-          message: decodedParameters.message,
-        },
-      };
-    case PvpActions.SILENCE:
-      return {
-        actionType: PvpActions.SILENCE,
-        actionCategory: PvpActionCategories.STATUS_EFFECT,
-        parameters: {
-          target: targetAddress,
-          duration: decodedParameters.duration,
-        },
-      };
-    case PvpActions.DEAFEN:
-      return {
-        actionType: PvpActions.DEAFEN,
-        actionCategory: PvpActionCategories.STATUS_EFFECT,
-        parameters: {
-          target: targetAddress,
-          duration: decodedParameters.duration,
-        },
-      };
-    case PvpActions.POISON:
-      return {
-        actionType: PvpActions.POISON,
-        actionCategory: PvpActionCategories.STATUS_EFFECT,
-        parameters: {
-          target: targetAddress,
-          duration: decodedParameters.duration,
-          find: decodedParameters.find,
-          replace: decodedParameters.replace,
-          case_sensitive: decodedParameters.case_sensitive,
-        },
-      };
-    default:
-      throw new Error(`Unsupported PVP action: ${verb}`);
-  }
 }
 
 function logAvailableEvents(abi: any[]) {
@@ -138,21 +50,10 @@ export async function startContractEventListener(roomId: number) {
 
     const provider = getEthersProvider(room.chain_id);
 
-    // Add reconnection logic
-    // provider.on('disconnect', async (error) => {
-    //   console.log('Provider disconnected:', error);
-    //   try {
-    //     await provider.destroy();
-    //     // Wait a bit before reconnecting
-    //     await new Promise((resolve) => setTimeout(resolve, 5000));
-    //     await startContractEventListener();
-    //   } catch (reconnectError) {
-    //     console.error('Failed to reconnect:', reconnectError);
-    //   }
-    // });
-
     // Verify provider connection
     const network = await provider.getNetwork();
+    console.log('network', network);
+
     console.log('Connected to network:', network.name, 'chainId:', network.chainId);
 
     if (!room.contract_address) {
@@ -188,6 +89,7 @@ export async function startContractEventListener(roomId: number) {
     const roundStartedFilter = contract.filters.RoundStarted();
     const roundStateUpdatedFilter = contract.filters.RoundStateUpdated();
     const pvpActionInvokedFilter = contract.filters.PvpActionInvoked();
+
     // Listen using filters
     contract.on(roundStartedFilter, async (eventPayload) => {
       // The args array contains the decoded parameters in order
@@ -363,38 +265,6 @@ export async function startContractEventListener(roomId: number) {
         await sendMessageToAgent({ agent, message });
       }
     });
-
-    // Log available events
-    // Query past events
-
-    // Uncomment below to get historical dump
-    // const latestBlock = await provider.getBlockNumber();
-    // const fromBlock = latestBlock - 1000; // Last 1000 blocks
-    // console.log('HERE');
-
-    // console.log(`Querying past events from block ${fromBlock} to ${latestBlock}`);
-    // const pastEvents = await contract.queryFilter(contract.filters.PvpActionInvoked(), fromBlock);
-
-    // console.log('Found past PvpActionInvoked events:', pastEvents.length);
-    // pastEvents.forEach((event) => {
-    //   console.log('Past event:', {
-    //     blockNumber: event.blockNumber,
-    //     transactionHash: event.transactionHash,
-    //     args: event.data,
-    //   });
-    // });
-
-    // Add a test event listener for all events. This is very noisy.
-    // contract.on('*', (event) => {
-    //   console.log('Received raw event:', event);
-    // });
-
-    // Instead, add error handling for the WebSocketProvider if you need it
-    // if (provider instanceof ethers.WebSocketProvider) {
-    //   provider.websocket.on('error', (error: Error) => {
-    //     console.error('WebSocket error:', error);
-    //   });
-    // }
   } catch (error) {
     console.error('Error in startContractEventListener:', error);
     // Retry after delay

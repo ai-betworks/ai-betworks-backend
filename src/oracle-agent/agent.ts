@@ -58,10 +58,6 @@ function validateEnvironment(): void {
     process.exit(1);
   }
 
-  // Warn about optional NETWORK_ID
-  if (!process.env.NETWORK_ID) {
-    console.warn('Warning: NETWORK_ID not set, defaulting to base-sepolia testnet');
-  }
 }
 
 // Add this right after imports and before any other code

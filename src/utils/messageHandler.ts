@@ -1,23 +1,3 @@
-/**
- * IMPORTANT: Message Signing Protocol
- *
- * Only core message fields are included in signature verification:
- * - timestamp
- * - roomId
- * - roundId
- * - agentId
- * - text
- *
- * Additional fields like 'context' and 'messageHistory' are NOT part of the signed content.
- * This ensures signature verification remains consistent even if context changes.
- *
- * The signing process:
- * 1. Extract core fields to be signed
- * 2. Sort object keys recursively
- * 3. JSON.stringify the sorted object
- * 4. Sign/verify the resulting string
- */
-
 import axios, { AxiosError } from 'axios';
 import { z } from 'zod';
 import { getEthersSigningWallet, supabase, wsOps } from '../config';
@@ -62,14 +42,6 @@ type ProcessMessageResponse = {
   success?: boolean;
 };
 
-// Add this helper function near the top of the file
-function bigIntReplacer(key: string, value: any) {
-  // Convert BigInt to string when serializing
-  if (typeof value === 'bigint') {
-    return value.toString();
-  }
-  return value;
-}
 
 /**
  * NEW: Main function to check inactive agents in a round

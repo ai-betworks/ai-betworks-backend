@@ -12,7 +12,6 @@ import { wsServer } from './ws/server';
 
 // TODO fixme, hardcoding bad
 const HARDCODED_GM_ID = 57;
-const HARDCODED_ROOM_ID = parseInt(process.env.HARDCODED_ROOM_ID || '17');
 
 export async function checkAgentsForNudge() {
   const { data: roundAgents, error } = await supabase
@@ -81,9 +80,6 @@ export async function checkAndCreateRounds() {
 
     // Process each room that needs a new round
     for (const room of roomsNeedingRounds || []) {
-      if (room.id !== HARDCODED_ROOM_ID) {
-        continue;
-      }
       console.log('creating new round for room', room.id);
       await createNewRound(room);
       break;
@@ -97,12 +93,16 @@ export async function createNewRound(
   room: Database['public']['Functions']['get_active_rooms_needing_rounds']['Returns'][0]
 ) {
   try {
+    console.log(
+      `creating new round for room (createNewRound) ${room.id} at ${room.contract_address} on chain ${room.chain_id}`
+    );
+
     const contract = getRoomContract(room.contract_address, room.chain_id);
     const tx = await contract.startRound();
     const receipt = await tx.wait();
 
     if (receipt.status === 0) {
-      console.error('Failed to start round for room', room.id, ':', receipt);
+      console.error(`Failed to start round for room ${room.id}:`, receipt);
       throw new Error('Transaction failed');
     }
 
@@ -139,18 +139,6 @@ export async function createNewRound(
       console.error('Round data not found for round', newRound.id);
       return;
     }
-
-    // // Tell agents to get the latest round
-    // for (const roundAgent of roundData.round_agents) {
-    //   console.log('reinitializing agent', roundAgent.agents.id, 'at', roundAgent.agents.endpoint);
-    //   axios
-    //     .post(`${new URL('reinit', roundAgent.agents.endpoint).toString()}`, {
-    //       roomId: newRound.room_id,
-    //     })
-    //     .catch((error) => {
-    //       console.error('Error reinitializing agent:', error.response?.data);
-    //     });
-    // }
     const backendEthersSigningWallet = getEthersSigningWallet(room.chain_id);
 
     await sendGmMessage({
@@ -165,6 +153,7 @@ export async function createNewRound(
       .update({ status: 'OPEN' })
       .eq('id', newRound.id)
       .eq('active', true);
+
     console.log('Updated round #', newRound.id, 'to OPEN');
     if (updateError3) {
       console.error('Error updating round to set started:', updateError3);
@@ -190,9 +179,6 @@ export async function checkAndCloseRounds() {
 
     // Process each room that needs a new round
     for (const round of roundsToClose || []) {
-      if (round.room_id !== HARDCODED_ROOM_ID) {
-        continue;
-      }
       // console.log(room.id);
       await closeRound(round);
     }
@@ -237,7 +223,7 @@ async function sendGmMessage({
 export async function closeRound(
   round: Database['public']['Functions']['get_active_rounds_to_close']['Returns'][0]
 ) {
-  console.log('closing round', round.id, 'for room', round.room_id);
+  console.log(`closing round ${round.id} for room ${round.room_id}`);
   const { error: updateError3 } = await supabase
     .from('rounds')
     .update({ status: 'CLOSING' })
@@ -249,10 +235,29 @@ export async function closeRound(
     return;
   }
 
+  console.log('round status updated to CLOSING');
+
   const contract = getRoomContract(round.contract_address, round.chain_id);
-  const tx = await contract.setCurrentRoundState(RoundState.Processing);
-  // const tx = await contract.performUpKeep(ethers.toUtf8Bytes(''));
-  const receipt = await tx.wait();
+  console.log('got room contract');
+  try {
+    console.log('Setting round state to Processing...');
+    const tx = await contract.setCurrentRoundState(RoundState.Processing);
+    console.log('Transaction sent:', tx.hash);
+
+    // Add timeout to prevent indefinite hanging
+    const receipt = await Promise.race([
+      tx.wait(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Transaction confirmation timeout')), 30000)
+      ),
+    ]);
+
+    console.log('Transaction confirmed, receipt:', receipt.transactionHash);
+  } catch (error) {
+    console.error('Failed to set round state:', error);
+    // Handle the error appropriately - maybe retry or mark the round as failed
+    throw error; // Re-throw to prevent continuing with a failed state change
+  }
 
   // select all the round_agents that are not kicked
   const { data: roundAgents, error: roundAgentsError } = await supabase
@@ -266,6 +271,7 @@ export async function closeRound(
     return;
   }
 
+  console.log('round agents fetched');
   const agentIds = roundAgents.map((roundAgent) => roundAgent.agent_id);
 
   const { data: agents, error: agentsError } = await supabase
@@ -277,6 +283,8 @@ export async function closeRound(
     console.error('Error fetching agents:', agentsError);
     return;
   }
+
+  console.log('agents fetched');
 
   // console.log('agentIds', agentIds);
   console.log('Agents who need to submit desicisons on round #', round.id, ':', agentIds);

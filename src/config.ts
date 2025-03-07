@@ -1,10 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
-import { ethers, JsonRpcProvider, Wallet } from 'ethers';
+import { ethers, Wallet } from 'ethers';
 import { type Address } from 'viem'; // keep this type if you want, or use string
+import { roomAbi } from './types/contract.types';
 import { Database } from './types/database.types';
 import { GameContracts } from './utils/contractInteractions';
 import { WSOperations } from './ws/operations';
-import { roomAbi } from './types/contract.types';
 
 type ChainConfig = {
   rpcUrl: string;
@@ -15,17 +15,22 @@ type ChainConfig = {
 const CHAIN_CONFIGS: Record<number, ChainConfig> = {
   84532: {
     rpcUrl: process.env.BASE_SEPOLIA_RPC_URL!,
-    applicationContractAddress: process.env.APPLICATION_CONTRACT_ADDRESS!,
+    applicationContractAddress: process.env.BASE_SEPOLIA_APPLICATION_CONTRACT_ADDRESS!,
     signerPrivateKey: process.env.SIGNER_PRIVATE_KEY!,
   },
   57054: {
-    rpcUrl: process.env.SONIC_TESTNET_RPC_URL!,
-    applicationContractAddress: process.env.SONIC_APPLICATION_CONTRACT_ADDRESS!,
+    rpcUrl: process.env.SONIC_BLAZE_RPC_URL!,
+    applicationContractAddress: process.env.SONIC_BLAZE_APPLICATION_CONTRACT_ADDRESS!,
     signerPrivateKey: process.env.SIGNER_PRIVATE_KEY!,
   },
   43113: {
     rpcUrl: process.env.AVALANCHE_FUJI_RPC_URL!,
-    applicationContractAddress: process.env.AVALANCHE_APPLICATION_CONTRACT_ADDRESS!,
+    applicationContractAddress: process.env.AVALANCHE_FUJI_APPLICATION_CONTRACT_ADDRESS!,
+    signerPrivateKey: process.env.SIGNER_PRIVATE_KEY!,
+  },
+  534351: {
+    rpcUrl: process.env.SCROLL_SEPOLIA_RPC_URL!,
+    applicationContractAddress: process.env.SCROLL_SEPOLIA_APPLICATION_CONTRACT_ADDRESS!,
     signerPrivateKey: process.env.SIGNER_PRIVATE_KEY!,
   },
 };
@@ -74,30 +79,6 @@ export function defaultContractClient() {
   return getContractClient(84532);
 }
 
-// export let contractClient: GameContracts;
-// (async () => {
-//   const rawCoreAddress = process.env.APPLICATION_CONTRACT_ADDRESS;
-//   // Get core contract address and ensure it's a valid address
-//   if (!rawCoreAddress) {
-//     console.info(
-//       'APPLICATION_CONTRACT_ADDRESS not found in environment variables, cannot initialize contract client'
-//     );
-//     return;
-//   }
-//   const coreAddress = rawCoreAddress as Address;
-
-//   // Initialize provider and wallet
-//   const provider = new JsonRpcProvider(
-//     process.env.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org'
-//   );
-//   contractClient = new GameContracts({
-//     provider,
-//     wallet: backendEthersSigningWallet,
-//     coreAddress,
-//   });
-// })();
-
-
 export function getRoomContract(contractAddress: string, chainId: number) {
   if (!CHAIN_CONFIGS[chainId]) {
     throw new Error(`No chain config found for chainId: ${chainId}`);
@@ -105,11 +86,19 @@ export function getRoomContract(contractAddress: string, chainId: number) {
 
   const provider = new ethers.JsonRpcProvider(CHAIN_CONFIGS[chainId].rpcUrl);
   const wallet = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY!, provider);
+  console.log('wallet', wallet);
   return new ethers.Contract(contractAddress, roomAbi, wallet);
 }
 
 export function getEthersProvider(chainId: number) {
-  return new ethers.JsonRpcProvider(CHAIN_CONFIGS[chainId].rpcUrl);
+  const chainConfig = CHAIN_CONFIGS[chainId];
+  if (!chainConfig) {
+    throw new Error(`No chain config found for chainId: ${chainId}`);
+  }
+  console.log('chainConfig', chainConfig);
+  console.log('chainConfig.rpcUrl', chainConfig.rpcUrl);
+
+  return new ethers.JsonRpcProvider(chainConfig.rpcUrl);
 }
 
 // export const ethersProvider = new ethers.JsonRpcProvider(process.env.BASE_SEPOLIA_RPC_URL);

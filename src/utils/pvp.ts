@@ -1,18 +1,20 @@
 import { ethers } from 'ethers';
 import { z } from 'zod';
-import {  getEthersProvider, getRoomContract } from '../config';
+import { getEthersProvider, getRoomContract } from '../config';
+import { hexToString } from '../contract-event-listener';
 import { agentMessageAiChatOutputSchema, agentMessageInputSchema } from '../schemas/agentMessage';
 import {
   AllPvpParametersType,
   attackActionSchema,
   deafenStatusSchema,
   poisonStatusSchema,
+  PvpActionCategories,
   PvpActions,
   PvpAllPvpActionsType,
   silenceStatusSchema,
 } from '../schemas/pvp';
-import { WsMessageTypes } from '../schemas/wsServer';
 import { AllAgentChatMessageSchemaTypes } from './schemas';
+
 /**
  * Defines the structure of PvP status data returned from the smart contract
  */
@@ -35,24 +37,6 @@ export interface PvPResult {
   appliedEffects: PvpAllPvpActionsType[];
   pvpStatusEffects: z.infer<typeof agentMessageAiChatOutputSchema>['content']['pvpStatusEffects'];
 }
-
-/**
- * Type representing a valid agent message that can be processed by PvP
- */
-type AgentMessage = Extract<
-  AllAgentChatMessageSchemaTypes,
-  {
-    messageType: typeof WsMessageTypes.AGENT_MESSAGE;
-    content: {
-      timestamp: number;
-      roomId: number;
-      roundId: number;
-      agentId: number;
-      text: string;
-      context?: any[];
-    };
-  }
->;
 
 /**
  * Decodes hex-encoded parameters from contract
@@ -90,7 +74,11 @@ function decodeParameters(parametersHex: string, verb: string): any {
 /**
  * Gets current PvP statuses from contract
  */
-async function getPvpStatuses(contractAddress: string, chainId: number, agentAddress: string): Promise<PvpStatus[]> {
+async function getPvpStatuses(
+  contractAddress: string,
+  chainId: number,
+  agentAddress: string
+): Promise<PvpStatus[]> {
   try {
     const contract = getRoomContract(contractAddress, chainId);
     const statuses = await contract.getPvpStatuses(agentAddress);
@@ -309,7 +297,11 @@ export async function applyPvp(
     for (const targetId of [...targetAgentIds, senderAgentId]) {
       const targetAddress = agentAddresses.get(targetId);
       if (!targetAddress) continue;
-      currentStatusesForAgentsById[targetId] = await getPvpStatuses(contractAddress, chainId, targetAddress);
+      currentStatusesForAgentsById[targetId] = await getPvpStatuses(
+        contractAddress,
+        chainId,
+        targetAddress
+      );
     }
     result.pvpStatusEffects = currentStatusesForAgentsById;
 
@@ -344,5 +336,83 @@ export async function applyPvp(
       pvpStatusEffects: {},
       currentBlockTimestamp: Number(Number.MAX_SAFE_INTEGER),
     };
+  }
+}
+export function getPvpActionFromVerb(
+  verb: string,
+  targetAddress: string,
+  decodedParameters: any
+): PvpAllPvpActionsType {
+  switch (verb.toUpperCase()) {
+    case PvpActions.ATTACK:
+      return {
+        actionType: PvpActions.ATTACK,
+        actionCategory: PvpActionCategories.DIRECT_ACTION,
+        parameters: {
+          target: targetAddress,
+          message: decodedParameters.message,
+        },
+      };
+    case PvpActions.SILENCE:
+      return {
+        actionType: PvpActions.SILENCE,
+        actionCategory: PvpActionCategories.STATUS_EFFECT,
+        parameters: {
+          target: targetAddress,
+          duration: decodedParameters.duration,
+        },
+      };
+    case PvpActions.DEAFEN:
+      return {
+        actionType: PvpActions.DEAFEN,
+        actionCategory: PvpActionCategories.STATUS_EFFECT,
+        parameters: {
+          target: targetAddress,
+          duration: decodedParameters.duration,
+        },
+      };
+    case PvpActions.POISON:
+      return {
+        actionType: PvpActions.POISON,
+        actionCategory: PvpActionCategories.STATUS_EFFECT,
+        parameters: {
+          target: targetAddress,
+          duration: decodedParameters.duration,
+          find: decodedParameters.find,
+          replace: decodedParameters.replace,
+          case_sensitive: decodedParameters.case_sensitive,
+        },
+      };
+    default:
+      throw new Error(`Unsupported PVP action: ${verb}`);
+  }
+}
+export function decodePvpInvokeParameters(verb: string, parametersHex: string): any {
+  try {
+    const parametersStr = hexToString(parametersHex);
+    const rawParameters = JSON.parse(parametersStr);
+
+    // Convert scientific notation or large numbers to proper address format if it's a target
+    if (rawParameters.target) {
+      // Ensure target is treated as a hex string address
+      rawParameters.target = ethers.getAddress(rawParameters.target.toString(16));
+    }
+
+    // Validate parameters based on verb type
+    switch (verb.toUpperCase()) {
+      case PvpActions.ATTACK:
+        return attackActionSchema.shape.parameters.parse(rawParameters);
+      case PvpActions.SILENCE:
+        return silenceStatusSchema.shape.parameters.parse(rawParameters);
+      case PvpActions.DEAFEN:
+        return deafenStatusSchema.shape.parameters.parse(rawParameters);
+      case PvpActions.POISON:
+        return poisonStatusSchema.shape.parameters.parse(rawParameters);
+      default:
+        throw new Error(`Unknown verb type: ${verb}`);
+    }
+  } catch (error) {
+    console.error('Error decoding parameters:', error);
+    return null;
   }
 }

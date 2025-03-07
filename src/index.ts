@@ -13,6 +13,7 @@ import { roomRoutes } from './routes/roomRoutes';
 import { roundRoutes } from './routes/roundRoutes';
 import { roundService } from './services/roundService';
 import { setupWebSocketServer } from './ws/server';
+
 // Add type declaration for the custom property
 declare module 'fastify' {
   interface FastifyRequest {
