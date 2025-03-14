@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import * as ethers from 'ethers';
 import { z } from 'zod';
 import { getEthersSigningWallet, getRoomContract, supabase } from './config';
 import { gmMessageAiChatOutputSchema, gmMessageInputSchema } from './schemas/gmMessage';
@@ -12,59 +13,7 @@ import { wsServer } from './ws/server';
 
 // TODO fixme, hardcoding bad
 const HARDCODED_GM_ID = 57;
-
-export async function checkAgentsForNudge() {
-  const { data: roundAgents, error } = await supabase
-    .from('round_agents')
-    .select('*, agents(*), rounds(rooms(*))')
-    .eq('rounds.active', true)
-    .eq('rounds.rooms.active', true);
-
-  if (error) {
-    console.error('Error fetching agents in active rounds:', error);
-    return;
-  }
-
-  const handledAgents = new Set<number>();
-  for (const roundAgent of roundAgents) {
-    try {
-      if (handledAgents.has(roundAgent.agents.id)) {
-        continue;
-      }
-      handledAgents.add(roundAgent.agents.id);
-      console.log('syncing agent', roundAgent.agents.id, 'at', roundAgent.agents.endpoint);
-      const roomId = roundAgent.rounds?.rooms?.id;
-      if (!roomId) {
-        continue;
-      }
-      const roundId = roundAgent.round_id;
-      const url = new URL('forceRoundSync', roundAgent.agents.endpoint).toString();
-      const response = await axios.post(url, {
-        roomId,
-        roundId,
-      });
-      console.log('syncing agent response', response.data);
-    } catch (error) {
-      if (error instanceof AxiosError) {
-        console.error(
-          'Error syncing agent',
-          roundAgent.agents.id,
-          'at',
-          roundAgent.agents.endpoint,
-          error.response?.data
-        );
-      } else {
-        console.error(
-          'Error syncing agent',
-          roundAgent.agents.id,
-          'at',
-          roundAgent.agents.endpoint,
-          error
-        );
-      }
-    }
-  }
-}
+const AGENT_DECISION_TIMEOUT_MS = parseInt(process.env.AGENT_DECISION_TIMEOUT_MS || '30000'); // Default 30 seconds
 
 export async function checkAndCreateRounds() {
   try {
@@ -141,7 +90,7 @@ export async function createNewRound(
     }
     const backendEthersSigningWallet = getEthersSigningWallet(room.chain_id);
 
-    await sendGmMessage({
+    await sendGmMessageToRoomOnly({
       roomId: newRound.room_id,
       sender: backendEthersSigningWallet.address,
       roundId: newRound.id,
@@ -187,7 +136,7 @@ export async function checkAndCloseRounds() {
   }
 }
 
-async function sendGmMessage({
+async function sendGmMessageToRoomOnly({
   roomId,
   sender,
   roundId,
@@ -223,25 +172,115 @@ async function sendGmMessage({
 export async function closeRound(
   round: Database['public']['Functions']['get_active_rounds_to_close']['Returns'][0]
 ) {
-  console.log(`closing round ${round.id} for room ${round.room_id}`);
-  const { error: updateError3 } = await supabase
-    .from('rounds')
-    .update({ status: 'CLOSING' })
-    .eq('id', round.id)
-    .eq('active', true);
+  console.log(`Closing round ${round.id} for room ${round.room_id}`);
 
-  if (updateError3) {
-    console.error('Error updating round:', updateError3);
-    return;
+  try {
+    const backendEthersSigningWallet = getEthersSigningWallet(round.chain_id);
+    // Update round status to CLOSING
+    await updateRoundStatus(round.id, 'CLOSING');
+    console.log(`Round #${round.id} status updated to CLOSING`);
+
+    // Get contract and set state to Processing
+    const contract = getRoomContract(round.contract_address, round.chain_id);
+    console.log(
+      `Got room contract for address ${round.contract_address} on chain ${round.chain_id}`
+    );
+
+    await setContractRoundState(contract, RoundState.Processing);
+    console.log(`Round #${round.id} contract state set to PROCESSING`);
+
+    // Get active agents in the round
+    const agents = await getActiveAgentsInRound(round.id);
+    console.log(`Found ${agents.length} active agents for round #${round.id}`);
+
+    if (!agents.length) {
+      console.log(`No active agents found for round #${round.id}, skipping decision collection`);
+      // Even with no agents, we should still finalize the round
+      await finalizeRound(round, backendEthersSigningWallet, contract);
+      return;
+    }
+
+    console.log(
+      `Agents who need to submit decisions on round #${round.id}:`,
+      agents.map((a) => a.id)
+    );
+
+    // Send instruction to submit decisions
+    await sendDecisionInstructions(round, agents, backendEthersSigningWallet);
+    console.log(`Sent decision instructions to all agents for round #${round.id}`);
+
+    // Notify chat that we're waiting for responses
+    await sendGmMessageToRoomOnly({
+      roomId: round.room_id,
+      sender: backendEthersSigningWallet.address,
+      roundId: round.id,
+      targets: [],
+      message: 'GM finished asking agents to submit their decision, waiting for responses...',
+    });
+    console.log(`Notified chat about waiting for agent decisions for round #${round.id}`);
+
+    // Wait for agents to submit their decisions
+    console.log(`Waiting ${AGENT_DECISION_TIMEOUT_MS}ms for agent decisions...`);
+    await new Promise((resolve) => setTimeout(resolve, AGENT_DECISION_TIMEOUT_MS));
+
+    // Process agent decisions
+    const receivedDecisions = await processAgentDecisions(round, contract);
+    console.log(
+      `Processed ${Object.keys(receivedDecisions).length} agent decisions for round #${round.id}`
+    );
+
+    // Send completion message and finalize round
+    await finalizeRound(round, backendEthersSigningWallet, contract);
+
+    console.log(`Successfully closed round #${round.id}`);
+  } catch (error) {
+    console.error(`Error closing round #${round.id}:`, error);
+
+    // Attempt to update the round status to indicate an error occurred
+    try {
+      await supabase
+        .from('rounds')
+        .update({ status: 'CANCELLED', active: false, error_message: String(error) })
+        .eq('id', round.id);
+      console.log(`Updated round #${round.id} status to CANCELLED due to error`);
+    } catch (updateError) {
+      console.error(`Failed to update round #${round.id} status after error:`, updateError);
+    }
+  }
+}
+
+// Helper functions
+
+async function updateRoundStatus(
+  roundId: number,
+  status: 'STARTING' | 'CLOSING' | 'OPEN' | 'CLOSED' | 'CANCELLED',
+  active?: boolean
+) {
+  const updateData: {
+    status: 'STARTING' | 'CLOSING' | 'OPEN' | 'CLOSED' | 'CANCELLED';
+    active?: boolean;
+  } = { status };
+
+  if (active !== undefined) {
+    updateData.active = active;
   }
 
-  console.log('round status updated to CLOSING');
+  const { error } = await supabase
+    .from('rounds')
+    .update(updateData)
+    .eq('id', roundId)
+    .eq('active', true);
 
-  const contract = getRoomContract(round.contract_address, round.chain_id);
-  console.log('got room contract');
+  if (error) {
+    console.error(`Error updating round ${roundId} status to ${status}:`, error);
+    throw new Error(`Failed to update round status: ${error.message}`);
+  }
+}
+
+async function setContractRoundState(contract: ethers.Contract, state: RoundState) {
   try {
-    console.log('Setting round state to Processing...');
-    const tx = await contract.setCurrentRoundState(RoundState.Processing);
+    console.log(`Setting round state to ${RoundState[state]}...`);
+    const tx = await contract.setCurrentRoundState(state);
     console.log('Transaction sent:', tx.hash);
 
     // Add timeout to prevent indefinite hanging
@@ -253,25 +292,26 @@ export async function closeRound(
     ]);
 
     console.log('Transaction confirmed, receipt:', receipt.transactionHash);
+    return receipt;
   } catch (error) {
-    console.error('Failed to set round state:', error);
-    // Handle the error appropriately - maybe retry or mark the round as failed
-    throw error; // Re-throw to prevent continuing with a failed state change
+    console.error(`Failed to set round state to ${RoundState[state]}:`, error);
+    throw error;
   }
+}
 
-  // select all the round_agents that are not kicked
+async function getActiveAgentsInRound(roundId: number) {
+  // Get non-kicked agents in the round
   const { data: roundAgents, error: roundAgentsError } = await supabase
     .from('round_agents')
     .select('*, rounds(rooms(room_agents(*)))')
-    .eq('round_id', round.id)
+    .eq('round_id', roundId)
     .eq('kicked', false);
 
   if (roundAgentsError) {
     console.error('Error fetching round agents:', roundAgentsError);
-    return;
+    throw roundAgentsError;
   }
 
-  console.log('round agents fetched');
   const agentIds = roundAgents.map((roundAgent) => roundAgent.agent_id);
 
   const { data: agents, error: agentsError } = await supabase
@@ -281,134 +321,164 @@ export async function closeRound(
 
   if (agentsError) {
     console.error('Error fetching agents:', agentsError);
-    return;
+    throw agentsError;
   }
 
-  console.log('agents fetched');
+  return agents || [];
+}
 
-  // console.log('agentIds', agentIds);
-  console.log('Agents who need to submit desicisons on round #', round.id, ':', agentIds);
-  // console.log('Agents who need to submit desicisons:', agents);
-
-  // return;
-  // console.log(receipt);
-  // Send a GM message to all agents in the round
+async function sendDecisionInstructions(
+  round: Database['public']['Functions']['get_active_rounds_to_close']['Returns'][0],
+  agents: any[],
+  wallet: any
+) {
+  // Prepare and send GM message to all agents
   const content = {
     message: 'We are closing the round, please submit your decision',
     roundId: round.id,
     gmId: HARDCODED_GM_ID,
     timestamp: Date.now(),
-    targets: agentIds,
+    targets: agents.map((a) => a.id),
     roomId: round.room_id,
     ignoreErrors: false,
     additionalData: {},
   };
-  const backendEthersSigningWallet = getEthersSigningWallet(round.chain_id);
 
-  const signature = await backendEthersSigningWallet.signMessage(
-    JSON.stringify(sortObjectKeys(content))
-  );
+  const signature = await wallet.signMessage(JSON.stringify(sortObjectKeys(content)));
 
   const message = {
     messageType: WsMessageTypes.GM_MESSAGE,
-    sender: backendEthersSigningWallet.address,
+    sender: wallet.address,
     signature,
     content: sortObjectKeys(content),
   } satisfies z.infer<typeof gmMessageInputSchema>;
 
   await processGmMessage(message);
 
-  for (const agent of agents) {
+  // Send individual instructions to each agent
+  const instructionPromises = agents.map((agent) => {
     const url = `${agent.endpoint}/messages/gmInstructDecision`;
-    // const url = new URL('messages/gmInstructDecision', agent.endpoint).toString();
-    console.log('Telling agent #', agent.id, 'at', url, 'to submit their decision');
-    axios
+    console.log(`Telling agent #${agent.id} at ${url} to submit their decision`);
+
+    return axios
       .post(url, {
         messageType: WsMessageTypes.GM_INSTRUCT_DECISION,
-        sender: backendEthersSigningWallet.address,
+        sender: wallet.address,
         signature: Date.now().toString(),
         content: sortObjectKeys({
           roomId: round.room_id,
           roundId: round.id,
         }),
       } satisfies z.infer<typeof gmInstructDecisionInputSchema>)
+      .then(() => console.log(`Finished telling agent #${agent.id} to submit their decision`))
       .catch((error) => {
-        console.error(
-          'Error telling agent #',
-          agent.id,
-          'at',
-          url,
-          'to submit their decision:',
-          error
-        );
+        console.error(`Error telling agent #${agent.id} to submit decision:`, error);
+        // Don't throw here to allow other agents to continue
       });
-    console.log('Finished telling agent #', agent.id, 'at', url, 'to submit their decision');
-  }
-
-  // Just sends a gm message to ai chat to tell them what's happen
-  await sendGmMessage({
-    roomId: round.room_id,
-    sender: backendEthersSigningWallet.address,
-    roundId: round.id,
-    targets: [],
-    message: 'GM finished asking agents to submit their decision, waiting for responses...',
   });
 
-  // wait 30 seconds for the agents to respond
-  // await new Promise((resolve) => setTimeout(resolve, 10000));
-  // await new Promise(resolve => setTimeout(resolve, 1000));
+  await Promise.allSettled(instructionPromises);
+}
 
-  // select all the round_agents that are not kicked
-  const { data: roundAgents2, error: roundAgentsError2 } = await supabase
+async function processAgentDecisions(
+  round: Database['public']['Functions']['get_active_rounds_to_close']['Returns'][0],
+  contract: ethers.Contract
+) {
+  // Get updated agent data after they've had a chance to respond
+  const { data: roundAgents, error } = await supabase
     .from('round_agents')
     .select('*, rounds(rooms(room_agents(*, agents(*))))')
     .eq('round_id', round.id)
     .eq('kicked', false);
 
-  if (roundAgentsError2) {
-    console.error('Error fetching round agents:', roundAgentsError2);
-    return;
+  if (error) {
+    console.error('Error fetching round agents for decisions:', error);
+    throw new Error(`Failed to fetch round agents: ${error.message}`);
   }
 
+  console.log(`Processing decisions for ${roundAgents.length} agents in round #${round.id}`);
   const receivedDecisions: Record<string, number> = {};
-  for (const roundAgent of roundAgents2) {
-    try {
-      console.log('roundAgent.outcome', roundAgent.outcome);
-      let outcome = JSON.parse(roundAgent.outcome as string);
 
-      // 1 = buy, 2 = hold, 3 = sell
+  // Process each agent's decision
+  const decisionPromises = roundAgents.map(async (roundAgent) => {
+    try {
+      console.log(
+        `Processing agent #${roundAgent.agent_id} decision, current outcome:`,
+        roundAgent.outcome
+      );
+      let outcome = roundAgent.outcome ? JSON.parse(roundAgent.outcome as string) : null;
+
+      // If no outcome, generate a random one (1=buy, 2=hold, 3=sell)
       if (!outcome || Object.keys(outcome).length === 0) {
         const decision = Math.floor(Math.random() * 3) + 1;
-        await supabase
+        console.log(
+          `No decision found for agent #${roundAgent.agent_id}, generating random decision: ${decision}`
+        );
+
+        const { error: updateError } = await supabase
           .from('round_agents')
           .update({ outcome: { decision, fabricated: true } })
           .eq('agent_id', roundAgent.agent_id);
+
+        if (updateError) {
+          console.error(
+            `Error updating fabricated outcome for agent #${roundAgent.agent_id}:`,
+            updateError
+          );
+        }
+
         outcome = { decision, fabricated: true };
-        receivedDecisions[roundAgent.agent_id] = outcome.decision;
       }
 
-      // 2 = processing
+      // Submit decision to contract (2 = processing)
+      console.log(`Submitting agent #${roundAgent.agent_id} decision to contract`);
       const tx = await contract.submitAgentDecision(
         roundAgent.rounds.rooms.room_agents[0].wallet_address,
         2
       );
       const receipt = await tx.wait();
-      console.log('agent decision receipt', receipt);
+      console.log(
+        `Agent #${roundAgent.agent_id} decision submitted, receipt:`,
+        receipt.transactionHash
+      );
+
       receivedDecisions[roundAgent.agent_id] = outcome.decision;
-      console.log('receivedDecisions', receivedDecisions);
     } catch (error) {
-      await supabase
-        .from('round_agents')
-        .update({ outcome: { decision: Math.floor(Math.random() * 3) + 1 } })
-        .eq('id', roundAgent.agent_id);
+      console.error(`Error processing decision for agent #${roundAgent.agent_id}:`, error);
+
+      // Generate random decision as fallback
+      const fallbackDecision = Math.floor(Math.random() * 3) + 1;
+      console.log(`Using fallback decision ${fallbackDecision} for agent #${roundAgent.agent_id}`);
+
+      try {
+        await supabase
+          .from('round_agents')
+          .update({
+            outcome: { decision: fallbackDecision, fabricated: true, error: String(error) },
+          })
+          .eq('id', roundAgent.agent_id);
+      } catch (updateError) {
+        console.error(
+          `Failed to update fallback decision for agent #${roundAgent.agent_id}:`,
+          updateError
+        );
+      }
+
+      receivedDecisions[roundAgent.agent_id] = fallbackDecision;
     }
-  }
+  });
 
-  console.log('receivedDecisions2', receivedDecisions);
+  await Promise.allSettled(decisionPromises);
+  return receivedDecisions;
+}
 
-  const content2 = {
-    message: `Round #${round.id} complete, you can withdraw your funds.
-    `,
+async function finalizeRound(
+  round: Database['public']['Functions']['get_active_rounds_to_close']['Returns'][0],
+  wallet: ethers.Wallet,
+  contract: ethers.Contract
+) {
+  const content = {
+    message: `Round #${round.id} complete, you can withdraw your funds.`,
     roundId: round.id,
     gmId: HARDCODED_GM_ID,
     timestamp: Date.now(),
@@ -418,30 +488,26 @@ export async function closeRound(
     additionalData: {},
   };
 
-  const signature2 = await backendEthersSigningWallet.signMessage(
-    JSON.stringify(sortObjectKeys(content))
-  );
-  // send a message to agents
-  await processGmMessage({
-    messageType: WsMessageTypes.GM_MESSAGE,
-    signature: Date.now().toString(),
-    sender: backendEthersSigningWallet.address,
-    content: sortObjectKeys(content2),
-  } satisfies z.infer<typeof gmMessageAiChatOutputSchema>);
-  console.log('Sent the decision message to room participants:', content2);
+  try {
+    // Sign and send completion message
+    const signature = await wallet.signMessage(JSON.stringify(sortObjectKeys(content)));
 
-  // set the round state to 3=closed
-  const tx2 = await contract.setCurrentRoundState(3);
-  const receipt2 = await tx2.wait();
-  console.log(receipt2);
+    await processGmMessage({
+      messageType: WsMessageTypes.GM_MESSAGE,
+      signature,
+      sender: wallet.address,
+      content: sortObjectKeys(content),
+    } satisfies z.infer<typeof gmMessageAiChatOutputSchema>);
 
-  const { error: updateError } = await supabase
-    .from('rounds')
-    .update({ status: 'CLOSED', active: false })
-    .eq('id', round.id)
-    .eq('active', true);
+    console.log('Sent completion message to room participants');
 
-  if (updateError) {
-    console.error('Error updating round:', updateError);
+    // Set contract round state to Closed
+    await setContractRoundState(contract, RoundState.Closed);
+
+    // Update database status
+    await updateRoundStatus(round.id, 'CLOSED', false);
+  } catch (error) {
+    console.error(`Error finalizing round #${round.id}:`, error);
+    throw error;
   }
 }

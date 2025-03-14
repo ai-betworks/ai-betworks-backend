@@ -6,12 +6,12 @@ import { checkAndCloseRounds, checkAndCreateRounds } from './bg-sync';
 import { supabase } from './config';
 import { startContractEventListener } from './contract-event-listener';
 import { signatureVerificationPlugin } from './middleware/signatureVerification';
-import zodSchemaPlugin from './plugins/zodSchema';
 import { agentRoutes } from './routes/agentRoutes';
 import { messagesRoutes } from './routes/messageRoutes';
 import { roomRoutes } from './routes/roomRoutes';
 import { roundRoutes } from './routes/roundRoutes';
-import { roundService } from './services/roundService';
+import { agentMonitorService } from './services/agentMonitorService';
+import zodSchemaPlugin from './utils/zodSchema';
 import { setupWebSocketServer } from './ws/server';
 
 // Add type declaration for the custom property
@@ -80,11 +80,29 @@ const start = async () => {
 
 start();
 
+// Setup graceful shutdown
+const shutdown = async () => {
+  console.log('Shutting down server...');
+
+  // Stop the agent monitor service
+  agentMonitorService.stop();
+
+  // Close the server
+  await server.close();
+
+  console.log('Server shutdown complete');
+  process.exit(0);
+};
+
+// Listen for termination signals
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
 (async () => {
   const { data: rooms, error: roomError } = await supabase
     .from('rooms')
     .select('*')
-    .eq('active', true)
+    .eq('active', true);
 
   if (roomError) {
     console.error('Error fetching rooms:', roomError);
@@ -109,34 +127,5 @@ job2.start();
 // const job3 = new CronJob('*/15 * * * * *', syncAgentsWithActiveRounds);
 // job3.start();
 
-//TODO Below was a hack to debug a repeat loop I was getting with agentMonitorService, should be moved back to agentMonitorService
-const agentMonitorService = async () => {
-  try {
-    // Get all rounds that need monitoring
-    const { data: activeRooms, error } = await supabase
-      .from('rooms')
-      .select(
-        `
-        *,
-        room_agents!inner(id, agent_id, last_message)
-      `
-      )
-      .eq('active', true)
-      .or(`last_message.is.null,last_message.lt.${new Date(Date.now() - 30000).toISOString()}`);
-
-    if (error || !activeRooms?.length) return;
-
-    // Process each active round
-    for (const room of activeRooms) {
-      // Delegates to roundController which:
-      // 1. Verifies round is still active
-      // 2. Calls messageHandler.processInactiveAgents
-      // 3. Handles notification delivery
-      await roundService.checkInactiveAgents(room.id);
-    }
-  } catch (error) {
-    console.error('Error in agent monitor service:', error);
-  }
-};
-const job4 = new CronJob('*/30 * * * * *', agentMonitorService);
-job4.start();
+// Start the agent monitor service
+agentMonitorService.start();
