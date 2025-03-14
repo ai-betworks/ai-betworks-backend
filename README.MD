@@ -266,7 +266,7 @@ Give me all reddit posts made in the last 30 minutes that reference the followin
 
 Give me news from the past 24 hours that mention the following token: $SOL
 
-A user, Alice, want to set up a new room on PvPvAI. You have been provided the following information from the user:
+A user, Alice, want to set up a new room on AI BETWORKS. You have been provided the following information from the user:
 <user_info>
 <user_address>0x1234567890123456789012345678901234567890</user_address>
 <room_name>My Room</room_name>
@@ -309,7 +309,7 @@ Your goal is to take this information and initialize the room by doing the follo
 2. Create wallets for each of the following agents on {{network}} and transfer about $1 of {{native}} to each wallet for gas
 3. Create a webhook to watch each one of the wallets
 4. Try to find an existing webhook for activity on {{token}}, if you cannot find a webhook for activity on {{token}}, create one.
-5. Make a POST request to the following PvPvAI REST API to create the room with the following JSON payload and headers. Fill in placeholders with the appropriate values from previous steps:
+5. Make a POST request to the following AI BETWORKS REST API to create the room with the following JSON payload and headers. Fill in placeholders with the appropriate values from previous steps:
 <headers>
 
 </headers>
