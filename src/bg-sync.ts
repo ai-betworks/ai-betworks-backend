@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios';
+import axios from 'axios';
 import * as ethers from 'ethers';
 import { z } from 'zod';
 import { getEthersSigningWallet, getRoomContract, supabase } from './config';
